@@ -24,6 +24,7 @@
 </template>
 
 <script setup lang="ts">
+import { OfflineCache } from "../app/offline-cache"
 import {computed, onMounted, watch} from "vue"
 import {useMappingsStore} from "../app/mappings-store"
 import {storeToRefs} from "pinia"

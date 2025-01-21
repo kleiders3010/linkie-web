@@ -1,3 +1,4 @@
+import {CacheService} from './cache-service';
 import {getQuery, reqVersions} from "./backend"
 import {addAlert} from "./alerts"
 import {applicableDependencyVersions, useDependencySearchStore} from "./dependency-store"
@@ -55,21 +56,95 @@ export const useDependenciesDataStore = defineStore({
     state: newState,
 })
 
+const VERSIONS_CACHE_KEY = 'versions';
+
+async function reqVersionsWithCache(): Promise<{ data: DependencySearchData }> {
+    console.log('Checking cache for versions data...');
+    const cachedData = await CacheService.retrieve<DependencySearchData>(VERSIONS_CACHE_KEY);
+    if (cachedData) {
+        console.log('Using cached dependency data:', cachedData);
+        return { data: cachedData };
+    }
+
+    try {
+        console.log('Fetching fresh dependency data...');
+        const response = await reqVersions();
+        console.log('Storing new dependency data in cache...', response.data);
+        await CacheService.store(VERSIONS_CACHE_KEY, response.data);
+        return response;
+    } catch (error) {
+        console.error('Error fetching versions:', error);
+        const expiredData = await CacheService.retrieve<DependencySearchData>(
+            VERSIONS_CACHE_KEY,
+            Infinity
+        );
+        
+        if (expiredData) {
+            console.log('Using expired cached data:', expiredData);
+            return { data: expiredData };
+        }
+        
+        throw error;
+    }
+}
+
+async function fetchVersionsWithCache(): Promise<DependencySearchData> {
+    const cachedData = await CacheService.retrieve<DependencySearchData>(VERSIONS_CACHE_KEY);
+    if (cachedData) {
+        console.log('Using cached data:', cachedData);
+        return cachedData;
+    }
+
+    try {
+        console.log('Fetching fresh data...');
+        const response = await reqVersions();
+        console.log('Storing new data in cache...');
+        await CacheService.store(VERSIONS_CACHE_KEY, response.data);
+        return response.data;
+    } catch (error) {
+        console.log('Network error, attempting to use expired cache...');
+        const expiredData = await CacheService.retrieve<DependencySearchData>(
+            VERSIONS_CACHE_KEY,
+            Infinity
+        );
+        
+        if (expiredData) {
+            console.log('Using expired cached data:', expiredData);
+            return expiredData;
+        }
+        
+        console.error('No cached data available:', error);
+        throw error;
+    }
+}
+
 export function updateDependencyData(fullPath?: string, query: LocationQuery | null = null) {
     let store = useDependenciesDataStore()
     if (query || (Object.keys(store.searchData.versions).length == 0 && !store.reqVersionsPromise)) {
-        store.reqVersionsPromise = reqVersions().then(value => {
-            store.searchData.versions = value.data
-            ensureDependencyData(fullPath, query)
+        console.log('Updating dependency data...');
+        store.reqVersionsPromise = reqVersionsWithCache().then(value => {
+            console.log('Successfully fetched dependency data:', value.data);
+            store.searchData.versions = value.data;
+            ensureDependencyData(fullPath, query);
         }).catch(reason => {
+            console.error('Failed to fetch versions:', reason);
             addAlert({
                 type: "error",
                 message: `Failed to fetch versions: ${reason.message}`,
-            })
+            });
         }).finally(() => {
-            store.reqVersionsPromise = undefined
-        })
+            store.reqVersionsPromise = undefined;
+        });
     }
+}
+
+// Add this new function:
+export async function refreshDependencyCache(): Promise<void> {
+    console.log('Refreshing dependency cache...');
+    await CacheService.clear(VERSIONS_CACHE_KEY);
+    const store = useDependenciesDataStore();
+    store.reqVersionsPromise = undefined;
+    await updateDependencyData();
 }
 
 export function ensureDependencyData(fullPath?: string, query: LocationQuery | null = null) {

@@ -68,7 +68,7 @@ export interface State {
     hasFirstLoaded: boolean,
 }
 
-function newState(): State {
+export function newState() {
     return {
         mappingsData: {
             namespaces: [],
@@ -77,6 +77,11 @@ function newState(): State {
         infoData: {
             entries: [],
             fuzzy: false,
+            // Ensure these are initialized as empty arrays
+            classes: [],
+            methods: [],
+            fields: [],
+            query: ''  // Add this to track if there's a query
         },
         reqNamespacesPromise: undefined,
         searchController: undefined,
@@ -93,16 +98,19 @@ export function updateMappingsData(fullPath?: string, query: LocationQuery | nul
     let store = useMappingsDataStore()
     if (query || (Object.keys(store.mappingsData.namespaces).length == 0 && !store.reqNamespacesPromise)) {
         store.reqNamespacesPromise = reqNamespaces().then(value => {
-            useMappingsDataStore().mappingsData.namespaces = value.data
-            ensureMappingsData(fullPath, query)
+            // Ensure we have data before setting it
+            if (value.data) {
+                useMappingsDataStore().mappingsData.namespaces = value.data;
+                ensureMappingsData(fullPath, query);
+            }
         }).catch(reason => {
             addAlert({
                 type: "error",
                 message: `Failed to fetch namespaces: ${reason.message}`,
-            })
+            });
         }).finally(() => {
-            useMappingsDataStore().reqNamespacesPromise = undefined
-        })
+            useMappingsDataStore().reqNamespacesPromise = undefined;
+        });
     }
 }
 
@@ -177,52 +185,79 @@ export function ensureMappingsData(fullPath?: string, query: LocationQuery | nul
     }
 }
 
-export function updateMappingsInfo(fullPath: string | undefined) {
-    let store = useMappingsDataStore()
-    let {namespace, version, searchText, allowClasses, allowFields, allowMethods, translateMode, translateAs, translateAsVersion} = useMappingsStore()
-    if (namespace && version && searchText && (allowClasses || allowMethods || allowFields)) {
-        if (store.infoData.namespace !== namespace || store.infoData.version !== version || store.infoData.query !== searchText
-            || store.infoData.allowClasses !== allowClasses || store.infoData.allowFields !== allowFields || store.infoData.allowMethods !== allowMethods
-            || store.infoData.translateAs !== translateAs || store.infoData.translateAsVersion !== translateAsVersion) {
-            if (store.searchController) {
-                store.searchController.abort()
-            }
-            store.searchController = new AbortController()
-            reqSearch(namespace, version, searchText, allowClasses, allowFields, allowMethods, translateMode, translateMode === "ns" ? translateAs : translateMode === "ver" ? translateAsVersion : undefined, store.searchController).then(value => {
-                if (value.data.error) {
-                    if (value.data.error !== "No results found!") {
-                        addAlert({
-                            type: "error",
-                            message: `Failed to search: ${value.data.error}`,
-                        })
-                    }
-                    store.infoData.entries = []
-                    store.infoData.fuzzy = false
-                    return
-                }
-                store.infoData.fuzzy = value.data.fuzzy
-                store.infoData.entries = (value.data.entries as any[]).map(mapEntryToMappingEntry)
-                if (useMappingsDataStore().hasFirstLoaded && fullPath) {
-                    updateMappingsWindowUrl(fullPath)
-                }
-            }).catch(reason => {
-                if (!axios.isCancel(reason)) {
-                    addAlert({
-                        type: "error",
-                        message: `Failed to search: ${reason.message}`,
-                    })
-                    store.infoData.entries = []
-                    store.infoData.fuzzy = false
-                }
-            }).finally(() => {
-                store.searchController = undefined
-            })
+// Add this function to help with debugging
+function safelyLogError(error: any) {
+    console.error('[Debug] Error details:', {
+        message: error.message,
+        stack: error.stack,
+        type: error.constructor.name
+    });
+}
+
+// frontend/src/app/mappings-data.ts
+
+
+export function updateMappingsInfo(fullPath?: string) {
+    let store = useMappingsDataStore();
+    let mappingsStore = useMappingsStore();
+
+    // Initialize empty state before search
+    store.infoData = {
+        entries: [],
+        fuzzy: false,
+        classes: [],
+        methods: [],
+        fields: [],
+        query: mappingsStore.searchText || ''
+    };
+
+    if (mappingsStore.namespace && mappingsStore.version) {
+        // Cancel previous search if it exists
+        if (store.searchController) {
+            store.searchController.abort();
         }
-    } else {
-        store.infoData.entries = []
-        store.infoData.fuzzy = false
+
+        store.searchController = new AbortController();
+
+        reqSearch(
+            mappingsStore.namespace,
+            mappingsStore.version,
+            mappingsStore.searchText || '',
+            mappingsStore.allowClasses,
+            mappingsStore.allowFields,
+            mappingsStore.allowMethods,
+            mappingsStore.translateMode,
+            mappingsStore.translateAs,
+            store.searchController,
+        ).then(value => {
+            // Ensure we have a valid response structure
+            const responseData = value.data || {};
+            store.infoData = {
+                entries: responseData.entries || [],
+                fuzzy: responseData.fuzzy || false,
+                classes: responseData.classes || [],
+                methods: responseData.methods || [],
+                fields: responseData.fields || [],
+                query: mappingsStore.searchText || ''
+            };
+        }).catch(error => {
+            if (error.name !== 'CanceledError') {
+                console.error('[Search] Error:', error);
+                store.infoData = {
+                    entries: [],
+                    fuzzy: false,
+                    classes: [],
+                    methods: [],
+                    fields: [],
+                    query: mappingsStore.searchText || ''
+                };
+                addAlert({
+                    type: "error",
+                    message: `Failed to search: ${error.message}`,
+                });
+            }
+        });
     }
-    setInfoDataToCurrent()
 }
 
 export function setInfoDataToCurrent() {
